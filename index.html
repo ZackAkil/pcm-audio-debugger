@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Base64 PCM Audio Decoder</title>
+    <title>Multi-Packet Base64 PCM Audio Decoder</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       @font-face {
@@ -12,7 +12,7 @@
       }
       .lucide {
         font-family: 'LucideIcons';
-        font-size: 1.25rem; /* Adjust icon size as needed */
+        font-size: 1.25rem; /* Adjust icon size */
         line-height: 1;
         display: inline-block;
         font-style: normal;
@@ -28,7 +28,7 @@
         width: 24px;
         height: 24px;
         border-radius: 50%;
-        border-left-color: #09f;
+        border-left-color: #4f46e5; /* Indigo */
         animation: spin 1s ease infinite;
         display: inline-block;
         margin-right: 8px;
@@ -38,28 +38,39 @@
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
       }
+      /* Style for remove button */
+      .remove-packet-btn {
+        flex-shrink: 0; /* Prevent button from shrinking */
+      }
     </style>
     <script>
-        // Initialize Tailwind CSS
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                    },
-                }
-            }
+      // Initialize Tailwind CSS with Inter font
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+          }
         }
+      }
     </script>
 </head>
 <body class="bg-gray-100 font-sans flex items-center justify-center min-h-screen p-4">
 
-    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-2xl">
-        <h1 class="text-2xl font-bold mb-6 text-center text-gray-800">Base64 PCM Audio Decoder</h1>
+    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-3xl">
+        <h1 class="text-2xl font-bold mb-6 text-center text-gray-800">Multi-Packet Base64 PCM Audio Decoder</h1>
 
         <div class="mb-4">
-            <label for="base64Input" class="block text-sm font-medium text-gray-700 mb-1">Paste Base64 Audio Data:</label>
-            <textarea id="base64Input" rows="6" class="w-full p-3 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" placeholder="Paste your Base64 encoded PCM audio here..."></textarea>
+             <label class="block text-sm font-medium text-gray-700 mb-2">Paste Sequential Base64 Audio Packets:</label>
+             <div id="packetContainer" class="space-y-3">
+                 <div class="packet-entry flex items-center space-x-2">
+                     <textarea rows="3" class="packet-input w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 shadow-sm" placeholder="Paste Base64 packet 1 here..."></textarea>
+                     </div>
+             </div>
+             <button id="addPacketButton" type="button" class="mt-3 text-sm text-indigo-600 hover:text-indigo-800 font-medium inline-flex items-center px-3 py-1 border border-indigo-200 rounded-md hover:bg-indigo-50 transition duration-150">
+                 <span class="lucide mr-1 text-base">&#xea0a;</span> Add Packet
+             </button>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -86,8 +97,7 @@
 
         <div class="text-center mb-4">
             <button id="playButton" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-md shadow-md transition duration-150 ease-in-out inline-flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
-                 <span class="lucide mr-2">&#xea48;</span>
-                Decode & Play
+                 <span class="lucide mr-2">&#xea48;</span> Decode & Play All Packets
             </button>
         </div>
 
@@ -97,13 +107,16 @@
     </div>
 
     <script>
-        const base64Input = document.getElementById('base64Input');
+        // --- DOM Element References ---
+        const packetContainer = document.getElementById('packetContainer');
+        const addPacketButton = document.getElementById('addPacketButton');
         const sampleRateInput = document.getElementById('sampleRate');
         const channelsInput = document.getElementById('channels');
         const bitDepthInput = document.getElementById('bitDepth');
         const playButton = document.getElementById('playButton');
         const statusArea = document.getElementById('statusArea');
 
+        // --- Web Audio API Globals ---
         let audioContext; // Reuse AudioContext
         let currentSource = null; // Track the currently playing source
 
@@ -118,16 +131,18 @@
                     console.error("Web Audio API is not supported in this browser:", e);
                     displayMessage('error', 'Web Audio API is not supported in this browser.');
                     playButton.disabled = true; // Disable button if API not supported
+                    addPacketButton.disabled = true;
                 }
             }
              // Resume context on user interaction if needed (good practice)
             if (audioContext && audioContext.state === 'suspended') {
-                audioContext.resume();
+                audioContext.resume().catch(err => console.error("Error resuming AudioContext:", err));
             }
         }
 
-        // --- Display Messages ---
+        // --- Display Status/Error Messages ---
         function displayMessage(type, message) {
+            statusArea.innerHTML = ''; // Clear previous content
             statusArea.textContent = message;
             statusArea.className = 'mt-4 p-3 text-center text-sm rounded-md min-h-[40px]'; // Reset classes
             if (type === 'error') {
@@ -137,26 +152,60 @@
             } else if (type === 'info') {
                 statusArea.classList.add('bg-blue-100', 'text-blue-700');
             } else if (type === 'loading') {
-                statusArea.innerHTML = `<span class="spinner"></span> ${message}`; // Add spinner
+                // Add spinner icon before the message
+                statusArea.innerHTML = `<span class="spinner"></span> ${message}`;
                 statusArea.classList.add('bg-yellow-100', 'text-yellow-700');
             }
         }
 
-        // --- Base64 Decoding and PCM Conversion ---
+        // --- Add/Remove Packet Input Fields ---
+        function addPacketInput() {
+            const packetCount = packetContainer.querySelectorAll('.packet-entry').length + 1;
+
+            const entryDiv = document.createElement('div');
+            entryDiv.className = 'packet-entry flex items-center space-x-2';
+
+            const textarea = document.createElement('textarea');
+            textarea.rows = 3;
+            textarea.className = 'packet-input w-full p-2 border border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 shadow-sm';
+            textarea.placeholder = `Paste Base64 packet ${packetCount} here...`;
+
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.className = 'remove-packet-btn text-red-500 hover:text-red-700 p-1 rounded-md hover:bg-red-100 transition duration-150 flex-shrink-0';
+            removeButton.innerHTML = '<span class="lucide text-lg">&#xea7f;</span>'; // Trash icon
+            removeButton.title = 'Remove this packet';
+            removeButton.onclick = () => {
+                entryDiv.remove();
+                // Re-number placeholders if needed (optional)
+                updatePlaceholders();
+            };
+
+            entryDiv.appendChild(textarea);
+            entryDiv.appendChild(removeButton);
+            packetContainer.appendChild(entryDiv);
+        }
+
+        // Optional: Update placeholders when a packet is removed
+        function updatePlaceholders() {
+            const textareas = packetContainer.querySelectorAll('.packet-input');
+            textareas.forEach((ta, index) => {
+                ta.placeholder = `Paste Base64 packet ${index + 1} here...`;
+            });
+        }
+
+
+        // --- Base64 Decoding and PCM Conversion for Multiple Packets ---
         function decodeAndPrepareAudio() {
             initAudioContext(); // Ensure context is ready
-            if (!audioContext) return; // Exit if context failed to initialize
+            if (!audioContext) return; // Exit if context failed
 
-            const base64Data = base64Input.value.trim();
+            // --- Get Settings ---
             const sampleRate = parseInt(sampleRateInput.value, 10);
             const numChannels = parseInt(channelsInput.value, 10);
             const format = bitDepthInput.value;
 
-            // --- Input Validation ---
-            if (!base64Data) {
-                displayMessage('error', 'Please paste Base64 audio data.');
-                return;
-            }
+            // --- Input Validation (Settings) ---
             if (isNaN(sampleRate) || sampleRate <= 0) {
                 displayMessage('error', 'Invalid Sample Rate. Please enter a positive number.');
                 return;
@@ -166,22 +215,57 @@
                 return;
             }
 
-            displayMessage('loading', 'Decoding Base64 data...');
+            // --- Collect and Decode Packets ---
+            const packetTextareas = packetContainer.querySelectorAll('.packet-input');
+            const decodedByteArrays = [];
+            let totalByteLength = 0;
+            let hasValidPackets = false;
+
+            displayMessage('loading', 'Decoding Base64 packets...');
             playButton.disabled = true;
 
-            // Use setTimeout to allow the UI to update before potentially heavy decoding
+            // Use setTimeout to allow UI update before potentially heavy decoding loop
             setTimeout(() => {
                 try {
-                    // 1. Decode Base64
-                    const binaryString = atob(base64Data);
-                    const len = binaryString.length;
-                    const bytes = new Uint8Array(len);
-                    for (let i = 0; i < len; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    const audioDataBuffer = bytes.buffer; // Get the underlying ArrayBuffer
+                    for (let i = 0; i < packetTextareas.length; i++) {
+                        const base64Data = packetTextareas[i].value.trim();
+                        if (!base64Data) {
+                            // Optionally skip empty textareas or treat as error
+                            console.log(`Skipping empty packet ${i + 1}`);
+                            continue;
+                        }
 
-                    // 2. Determine bytes per sample and sample count
+                        try {
+                            const binaryString = atob(base64Data);
+                            const len = binaryString.length;
+                            const bytes = new Uint8Array(len);
+                            for (let j = 0; j < len; j++) {
+                                bytes[j] = binaryString.charCodeAt(j);
+                            }
+                            decodedByteArrays.push(bytes);
+                            totalByteLength += bytes.length;
+                            hasValidPackets = true;
+                        } catch (e) {
+                            throw new Error(`Invalid Base64 data in packet ${i + 1}: ${e.message}`);
+                        }
+                    }
+
+                    if (!hasValidPackets) {
+                        throw new Error('No valid Base64 data found in any packet.');
+                    }
+
+                    // --- Concatenate Decoded Data ---
+                    displayMessage('loading', `Concatenating ${decodedByteArrays.length} packets (${totalByteLength} bytes)...`);
+
+                    const combinedBytes = new Uint8Array(totalByteLength);
+                    let offset = 0;
+                    for (const byteArray of decodedByteArrays) {
+                        combinedBytes.set(byteArray, offset);
+                        offset += byteArray.length;
+                    }
+                    const audioDataBuffer = combinedBytes.buffer; // Get the underlying ArrayBuffer
+
+                    // --- Process Combined PCM Data ---
                     let bytesPerSample = 0;
                     if (format === '8u') bytesPerSample = 1;
                     else if (format === '16s') bytesPerSample = 2;
@@ -190,61 +274,52 @@
                         throw new Error("Unsupported bit depth/format selected.");
                     }
 
-                    const totalSamples = len / bytesPerSample;
+                    const totalSamples = totalByteLength / bytesPerSample;
                     const frameCount = totalSamples / numChannels;
 
-                    if (len % (bytesPerSample * numChannels) !== 0) {
-                         console.warn(`Warning: Data length (${len} bytes) is not perfectly divisible by bytes per sample (${bytesPerSample}) and channels (${numChannels}). There might be trailing data.`);
-                    }
-                    if (!Number.isInteger(frameCount)) {
-                         throw new Error(`Calculated frame count (${frameCount}) is not an integer. Check parameters or data integrity.`);
-                    }
+                    if (totalByteLength % (bytesPerSample * numChannels) !== 0) {
+                         console.warn(`Warning: Total data length (${totalByteLength} bytes) is not perfectly divisible by bytes per sample (${bytesPerSample}) and channels (${numChannels}). There might be trailing data.`);
+                     }
+                     if (!Number.isInteger(frameCount) || frameCount <= 0) {
+                         throw new Error(`Calculated frame count (${frameCount}) is invalid or zero. Check parameters or data integrity.`);
+                     }
 
+                    displayMessage('info', `Decoded ${totalByteLength} bytes total. Processing ${frameCount.toFixed(0)} frames...`);
 
-                    displayMessage('info', `Decoded ${len} bytes. Processing ${frameCount.toFixed(0)} frames...`);
-
-
-                    // 3. Create AudioBuffer
-                    const audioBuffer = audioContext.createBuffer(numChannels, frameCount, sampleRate);
-
-                    // 4. Fill AudioBuffer with PCM data (converting and de-interleaving)
+                    // --- Create and Fill AudioBuffer ---
+                    const audioBuffer = audioContext.createBuffer(numChannels, Math.floor(frameCount), sampleRate); // Use Math.floor for safety
                     const dataView = new DataView(audioDataBuffer);
-                    let offset = 0;
                     const littleEndian = true; // Assume Little Endian for 16s and 32f
 
                     for (let channel = 0; channel < numChannels; channel++) {
                         const channelData = audioBuffer.getChannelData(channel);
-                        offset = channel * bytesPerSample; // Start offset for this channel in the first frame
+                        let currentReadOffset;
 
-                        for (let i = 0; i < frameCount; i++) {
+                        for (let i = 0; i < audioBuffer.length; i++) { // Iterate up to buffer length
                             let sampleValue = 0;
-                            const currentOffset = i * numChannels * bytesPerSample + offset;
+                             // Calculate offset for interleaved data
+                            currentReadOffset = (i * numChannels + channel) * bytesPerSample;
 
                             // Ensure we don't read past the buffer boundary
-                            if (currentOffset + bytesPerSample > audioDataBuffer.byteLength) {
+                            if (currentReadOffset + bytesPerSample > audioDataBuffer.byteLength) {
                                 console.warn(`Attempted to read past buffer boundary at frame ${i}, channel ${channel}. Filling with 0.`);
-                                sampleValue = 0; // Or handle as appropriate
+                                sampleValue = 0;
                             } else {
                                 // Read and convert sample based on format
-                                if (format === '8u') {
-                                    // 8-bit Unsigned Integer: 0 to 255 -> -1.0 to +1.0
-                                    sampleValue = (dataView.getUint8(currentOffset) - 128) / 128.0;
-                                } else if (format === '16s') {
-                                    // 16-bit Signed Integer: -32768 to 32767 -> -1.0 to +1.0
-                                    sampleValue = dataView.getInt16(currentOffset, littleEndian) / 32768.0;
-                                } else if (format === '32f') {
-                                    // 32-bit Float: Assumed to be in -1.0 to 1.0 range already
-                                    sampleValue = dataView.getFloat32(currentOffset, littleEndian);
+                                if (format === '8u') { // 8-bit Unsigned Int: 0 to 255 -> -1.0 to +1.0
+                                    sampleValue = (dataView.getUint8(currentReadOffset) - 128) / 128.0;
+                                } else if (format === '16s') { // 16-bit Signed Int: -32768 to 32767 -> -1.0 to +1.0
+                                    sampleValue = dataView.getInt16(currentReadOffset, littleEndian) / 32768.0;
+                                } else if (format === '32f') { // 32-bit Float: Assumed to be in -1.0 to 1.0 range
+                                    sampleValue = dataView.getFloat32(currentReadOffset, littleEndian);
                                 }
                             }
-
-
                             // Clamp values just in case they exceed the expected range
                             channelData[i] = Math.max(-1.0, Math.min(1.0, sampleValue));
                         }
                     }
 
-                    // 5. Play the buffer
+                    // --- Play the Combined Buffer ---
                     playAudioBuffer(audioBuffer);
 
                 } catch (error) {
@@ -257,45 +332,53 @@
 
         // --- Audio Playback ---
         function playAudioBuffer(audioBuffer) {
-            if (!audioContext) return;
+            if (!audioContext || !audioBuffer) return;
 
              // Stop any previously playing source
             if (currentSource) {
                 try {
                     currentSource.stop();
-                    currentSource.disconnect(); // Disconnect from destination
+                    currentSource.disconnect();
                 } catch(e) {
                     console.warn("Could not stop previous source:", e);
                 }
                 currentSource = null;
             }
 
-
             const source = audioContext.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(audioContext.destination);
 
             source.onended = () => {
-                displayMessage('success', `Playback finished. Duration: ${audioBuffer.duration.toFixed(2)}s`);
-                playButton.disabled = false; // Re-enable button after playback
+                displayMessage('success', `Playback finished. Total Duration: ${audioBuffer.duration.toFixed(2)}s`);
+                playButton.disabled = false; // Re-enable button
                 currentSource = null;
             };
 
-            source.start(0); // Play immediately
-            currentSource = source; // Track the new source
-
-            displayMessage('info', `Playing audio... (${audioBuffer.duration.toFixed(2)}s)`);
-            // Keep button disabled while playing
+            try {
+                source.start(0); // Play immediately
+                currentSource = source; // Track the new source
+                displayMessage('info', `Playing combined audio... (${audioBuffer.duration.toFixed(2)}s)`);
+                // Keep button disabled while playing (it's already disabled)
+            } catch (error) {
+                 console.error("Error starting audio playback:", error);
+                 displayMessage('error', `Error starting playback: ${error.message}`);
+                 playButton.disabled = false; // Re-enable on start error
+                 currentSource = null;
+            }
         }
 
-        // --- Event Listener ---
+        // --- Event Listeners ---
+        addPacketButton.addEventListener('click', addPacketInput);
         playButton.addEventListener('click', decodeAndPrepareAudio);
 
-        // Optional: Initialize AudioContext on first user interaction
+        // Initialize AudioContext on load or first interaction
+        // Using window.onload is safer than immediate init sometimes
+        window.onload = () => {
+            initAudioContext();
+        };
+        // Or, allow first click to initialize:
         // document.body.addEventListener('click', initAudioContext, { once: true });
-        // Or initialize directly if preferred (might show a warning in some browsers)
-         initAudioContext();
-
 
     </script>
 
